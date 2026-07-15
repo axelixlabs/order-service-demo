@@ -1,0 +1,6 @@
+.git
+.gitignore
+build
+.gradle
+*.md
+docker-compose.yml

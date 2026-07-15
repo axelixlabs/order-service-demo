@@ -1,0 +1,56 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.3.4'
+    id 'io.spring.dependency-management' version '1.1.6'
+}
+
+group = 'com.example'
+version = '0.0.1-SNAPSHOT'
+description = 'Purchase Order processing service'
+
+java {
+    toolchain {
+        // The application targets Java 17 even though a newer JDK may be
+        // installed. Gradle auto-detects a matching toolchain (e.g. via SDKMAN).
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+ext {
+    testcontainersVersion = '1.20.1'
+}
+
+dependencies {
+    // Web + validation
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+
+    // Persistence (Hibernate via Spring Data JPA)
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+
+    // Messaging
+    implementation 'org.springframework.kafka:spring-kafka'
+
+    // Observability / health
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+
+    // Runtime driver
+    runtimeOnly 'org.postgresql:postgresql'
+
+    // Dev / test databases and tooling
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.springframework.kafka:spring-kafka-test'
+    testRuntimeOnly 'com.h2database:h2'
+
+    // Testcontainers (integration tests against real Postgres)
+    testImplementation "org.testcontainers:junit-jupiter:${testcontainersVersion}"
+    testImplementation "org.testcontainers:postgresql:${testcontainersVersion}"
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
