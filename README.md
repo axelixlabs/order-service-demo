@@ -76,9 +76,45 @@ to each anti-pattern.
 docker compose up --build
 ```
 
-This starts PostgreSQL, Kafka (KRaft mode), and the application on
-`http://localhost:8080`. Demo data (catalogue + one customer) is seeded on first
-boot.
+This starts PostgreSQL, Kafka (KRaft mode), the application on
+`http://localhost:8080`, and the monitoring stack (Prometheus + Grafana). Demo
+data (catalogue + one customer) is seeded on first boot.
+
+| Service    | URL                       | Notes                          |
+|------------|---------------------------|--------------------------------|
+| App        | http://localhost:8080     | REST APIs + `/actuator`        |
+| Prometheus | http://localhost:9090     | scrapes `app:8080` every 5s    |
+| Grafana    | http://localhost:3000     | login `admin` / `admin`        |
+
+## Monitoring
+
+The app exposes Micrometer metrics at `/actuator/prometheus`. Prometheus scrapes
+them and Grafana auto-provisions a dashboard (**Order Service — RSS, Startup &
+Throughput**) tracking the three requested signals:
+
+| Signal | Metric | Panel query |
+|--|--|--|
+| **RSS** | `process_resident_memory_bytes` | `process_resident_memory_bytes{application="order-service"}` |
+| **Startup time** | `application_ready_time_seconds` / `application_started_time_seconds` | shown as a stat panel |
+| **Throughput** | `http_server_requests_seconds_count` | `sum(rate(...[1m]))`, total and per `method`/`uri` |
+
+RSS is not exposed by Micrometer out of the box, so `ProcessMemoryMetrics` adds a
+custom gauge that reads `/proc/self/statm` (a Linux-container concern; it reports
+`NaN` elsewhere). Startup and HTTP-throughput metrics are contributed
+automatically by Spring Boot Actuator.
+
+Everything under `monitoring/` is provisioned declaratively:
+
+```
+monitoring/
+  prometheus/prometheus.yml                      # scrape config
+  grafana/provisioning/datasources/prometheus.yml  # Prometheus datasource (uid: prometheus)
+  grafana/provisioning/dashboards/dashboards.yml   # file-based dashboard provider
+  grafana/dashboards/order-service.json            # the dashboard (Grafana model is JSON)
+```
+
+Grafana dashboards are JSON by design; only the provisioning (datasource +
+provider) is YAML. Open Grafana → the dashboard loads with no manual import.
 
 ### Try it
 

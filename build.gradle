@@ -37,6 +37,8 @@ dependencies {
 
     // Observability / health
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    // Prometheus scrape endpoint (/actuator/prometheus)
+    runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
 
     // Runtime driver
     runtimeOnly 'org.postgresql:postgresql'
