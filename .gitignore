@@ -12,3 +12,6 @@ build/
 
 # OS
 .DS_Store
+
+# Test data loader venv
+scripts/.venv/

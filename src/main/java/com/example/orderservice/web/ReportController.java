@@ -16,8 +16,9 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * Heavy/reporting API surface. These endpoints read large volumes of data and
- * build expensive responses; they are expected to be called infrequently.
+ * Heavy/reporting API surface. These endpoints read large volumes of data for a
+ * single customer and build expensive responses; they are expected to be called
+ * infrequently.
  */
 @RestController
 @RequestMapping("/api/v1/reports")
@@ -30,33 +31,36 @@ public class ReportController {
     }
 
     /**
-     * Heavy path #1 — stream a CSV export of every order in the window. The body
-     * is written incrementally via {@link StreamingResponseBody} so the servlet
-     * container flushes chunks to the client without buffering the whole file.
+     * Heavy path #1 — stream a CSV export of one customer's orders in the window.
+     * The body is written incrementally via {@link StreamingResponseBody} so the
+     * servlet container flushes chunks to the client without buffering the whole file.
      */
     @GetMapping(value = "/orders/export", produces = "text/csv")
     public ResponseEntity<StreamingResponseBody> exportOrders(
+            @RequestParam Long customerId,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant from,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant to) {
 
-        StreamingResponseBody body = out -> reportService.exportOrdersCsv(from, to, out);
+        StreamingResponseBody body = out -> reportService.exportOrdersCsv(customerId, from, to, out);
         return ResponseEntity.ok()
-                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"orders.csv\"")
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=\"orders-customer-" + customerId + ".csv\"")
                 .contentType(MediaType.parseMediaType("text/csv"))
                 .body(body);
     }
 
     /**
-     * Heavy path #2 — paginated orders feed (each order with its line items).
+     * Heavy path #2 — paginated feed of one customer's orders (each with line items).
      * The page is requested via {@code page}/{@code size}, but Hibernate paginates
      * it in memory because of the collection fetch join (see the service note).
      */
     @GetMapping("/orders")
     public List<OrderResponse> ordersFeed(
+            @RequestParam Long customerId,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant from,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant to,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return reportService.ordersFeed(from, to, page, size);
+        return reportService.ordersFeed(customerId, from, to, page, size);
     }
 }

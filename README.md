@@ -46,11 +46,11 @@ topic **after the transaction commits**. A sample `@KafkaListener` consumes it.
 
 | Method | Path                                    | Description                                         |
 |--------|-----------------------------------------|-----------------------------------------------------|
-| GET    | `/api/v1/reports/orders/export`         | Streams a CSV of all orders in a window (cursor)    |
-| GET    | `/api/v1/reports/orders`                | Paginated orders feed, each order with its items    |
+| GET    | `/api/v1/reports/orders/export`         | Streams a CSV of one customer's orders in a window  |
+| GET    | `/api/v1/reports/orders`                | Paginated feed of one customer's orders with items  |
 
-Both accept ISO-8601 `from`/`to` query params, e.g.
-`?from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z`; the orders feed also
+Both accept a required `customerId` plus ISO-8601 `from`/`to` query params, e.g.
+`?customerId=1&from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z`; the orders feed also
 accepts `page` and `size`.
 
 ### Intentional performance anti-patterns
@@ -78,7 +78,8 @@ docker compose up --build
 
 This starts PostgreSQL, Kafka (KRaft mode), the application on
 `http://localhost:8080`, and the monitoring stack (Prometheus + Grafana). Demo
-data (catalogue + one customer) is seeded on first boot.
+data (catalogue + one customer) is seeded on first boot when tables are empty.
+For a large dataset, see [Loading test data](#loading-test-data).
 
 | Service    | URL                       | Notes                          |
 |------------|---------------------------|--------------------------------|
@@ -139,11 +140,11 @@ curl http://localhost:8080/api/v1/orders/1
 curl -X PATCH http://localhost:8080/api/v1/orders/1/status \
   -H 'Content-Type: application/json' -d '{"status":"PAID"}'
 
-# Heavy: paginated orders feed (watch the logs for HHH90003004 in-memory paging)
-curl 'http://localhost:8080/api/v1/reports/orders?from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z&page=0&size=20'
+# Heavy: paginated orders feed for one customer (watch the logs for HHH90003004 in-memory paging)
+curl 'http://localhost:8080/api/v1/reports/orders?customerId=1&from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z&page=0&size=20'
 
-# Heavy: CSV export
-curl 'http://localhost:8080/api/v1/reports/orders/export?from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z'
+# Heavy: CSV export for one customer
+curl 'http://localhost:8080/api/v1/reports/orders/export?customerId=1&from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z'
 ```
 
 ## Building and testing locally
@@ -167,3 +168,45 @@ Key environment variables (see `application.yml` for defaults):
 | `SPRING_DATASOURCE_PASSWORD`      | `orderpass`                                   |
 | `SPRING_KAFKA_BOOTSTRAP_SERVERS`  | `localhost:9092`                              |
 | `APP_SEED_ENABLED`                | `true`                                        |
+
+## Loading test data
+
+A bulk loader populates PostgreSQL with realistic data for performance demos:
+
+| Entity           | Count        |
+|------------------|--------------|
+| Categories       | 10           |
+| Products         | 1,000        |
+| Customers        | 100,000      |
+| Addresses        | 200,000      |
+| Purchase orders  | 10,000,000   |
+
+Orders are spread evenly (100 per customer), timestamps span ~3 years, and
+status/payment/shipment fields follow plausible distributions.
+
+**From the repo root** (starts Postgres, ensures schema, loads data — allow
+30–60 minutes for the full 10M-order load):
+
+```bash
+./scripts/load-test-data.sh
+```
+
+Or run the Python loader directly against a running database:
+
+```bash
+pip install -r scripts/requirements.txt
+# or: python3 -m venv scripts/.venv && scripts/.venv/bin/pip install -r scripts/requirements.txt
+python scripts/load_test_data.py --create-schema
+```
+
+Useful flags: `--seed 42` (reproducible data), `--customers N`, `--orders M`
+(orders must be divisible by customers). Stop the app before loading if it is
+already running so the truncate step is not blocked by open connections.
+
+After loading, start the stack normally:
+
+```bash
+docker compose up -d
+```
+
+The built-in `DataSeeder` skips automatically when products already exist.

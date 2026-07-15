@@ -23,6 +23,7 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -34,6 +35,7 @@ class ReportServiceTest {
     @Test
     void exportOrdersCsvWritesHeaderAndRows() {
         Customer customer = new Customer("Ada", "Lovelace", "ada@example.com", "+1");
+        ReflectionTestUtils.setField(customer, "id", 7L);
         Category cat = new Category("Electronics", "d");
         Product product = new Product("SKU-1", "Keyboard", "d", new BigDecimal("100.00"), 5, cat);
 
@@ -41,11 +43,12 @@ class ReportServiceTest {
         order.addItem(new OrderItem(product, 2));
         ReflectionTestUtils.setField(order, "createdAt", Instant.parse("2026-01-01T00:00:00Z"));
 
-        when(orderRepository.streamByCreatedAtBetween(any(), any())).thenReturn(Stream.of(order));
+        when(orderRepository.streamByCustomerIdAndCreatedAtBetween(eq(7L), any(), any()))
+                .thenReturn(Stream.of(order));
 
         ReportService service = new ReportService(orderRepository);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        service.exportOrdersCsv(Instant.parse("2026-01-01T00:00:00Z"), Instant.parse("2026-02-01T00:00:00Z"), out);
+        service.exportOrdersCsv(7L, Instant.parse("2026-01-01T00:00:00Z"), Instant.parse("2026-02-01T00:00:00Z"), out);
 
         String csv = out.toString(StandardCharsets.UTF_8);
         String[] lines = csv.strip().split("\n");
@@ -64,11 +67,11 @@ class ReportServiceTest {
         order.addItem(new OrderItem(product, 2));
         ReflectionTestUtils.setField(order, "id", 42L);
 
-        when(orderRepository.findOrdersWithItems(any(), any(), any(Pageable.class)))
+        when(orderRepository.findOrdersWithItemsByCustomerId(eq(1L), any(), any(), any(Pageable.class)))
                 .thenReturn(List.of(order));
 
         ReportService service = new ReportService(orderRepository);
-        List<OrderResponse> feed = service.ordersFeed(Instant.now(), Instant.now(), 0, 20);
+        List<OrderResponse> feed = service.ordersFeed(1L, Instant.now(), Instant.now(), 0, 20);
 
         assertThat(feed).hasSize(1);
         assertThat(feed.get(0).orderNumber()).isEqualTo("ORD-ABC");

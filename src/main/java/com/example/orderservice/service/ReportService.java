@@ -30,9 +30,9 @@ public class ReportService {
     }
 
     /**
-     * HEAVY PATH: stream every order in the window straight to the HTTP response
-     * as CSV. It runs inside a read-only transaction and consumes a JDBC cursor,
-     * so the row count never blows up heap.
+     * HEAVY PATH: stream one customer's orders in the window straight to the HTTP
+     * response as CSV. It runs inside a read-only transaction and consumes a JDBC
+     * cursor, so the row count never blows up heap.
      *
      * <p>ANTI-PATTERN (demo): the streaming query does not fetch associations,
      * so {@code order.getCustomer().getEmail()} and {@code order.getItems()}
@@ -41,9 +41,9 @@ public class ReportService {
      * counts via a projection or a batched secondary query.
      */
     @Transactional(readOnly = true)
-    public void exportOrdersCsv(Instant from, Instant to, OutputStream out) {
+    public void exportOrdersCsv(Long customerId, Instant from, Instant to, OutputStream out) {
         Writer writer = new BufferedWriter(new OutputStreamWriter(out, StandardCharsets.UTF_8));
-        try (Stream<PurchaseOrder> orders = orderRepository.streamByCreatedAtBetween(from, to)) {
+        try (Stream<PurchaseOrder> orders = orderRepository.streamByCustomerIdAndCreatedAtBetween(customerId, from, to)) {
             writeLine(writer, "order_number", "status", "customer_email", "item_count", "total_amount", "created_at");
             orders.forEach(order -> writeLine(writer,
                     order.getOrderNumber(),
@@ -59,7 +59,7 @@ public class ReportService {
     }
 
     /**
-     * HEAVY PATH: a paginated orders feed, each order with its line items.
+     * HEAVY PATH: a paginated feed of one customer's orders, each with its line items.
      *
      * <p>ANTI-PATTERN (demo): the backing query {@code join fetch}es the items
      * collection AND takes a {@link Pageable}. Hibernate can't turn that page into
@@ -70,9 +70,9 @@ public class ReportService {
      * method for the fix.
      */
     @Transactional(readOnly = true)
-    public List<OrderResponse> ordersFeed(Instant from, Instant to, int page, int size) {
+    public List<OrderResponse> ordersFeed(Long customerId, Instant from, Instant to, int page, int size) {
         Pageable pageable = PageRequest.of(page, size, Sort.by("createdAt").ascending());
-        return orderRepository.findOrdersWithItems(from, to, pageable).stream()
+        return orderRepository.findOrdersWithItemsByCustomerId(customerId, from, to, pageable).stream()
                 .map(OrderResponse::from)
                 .toList();
     }

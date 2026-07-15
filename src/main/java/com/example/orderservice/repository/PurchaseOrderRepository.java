@@ -18,8 +18,8 @@ public interface PurchaseOrderRepository extends JpaRepository<PurchaseOrder, Lo
     Optional<PurchaseOrder> findByOrderNumber(String orderNumber);
 
     /**
-     * Heavy report: stream all orders in a date window without loading them all
-     * into memory at once. Must be consumed inside a read-only transaction.
+     * Heavy report: stream one customer's orders in a date window without loading
+     * them all into memory at once. Must be consumed inside a read-only transaction.
      *
      * <p>ANTI-PATTERN (demo): this deliberately does NOT {@code join fetch} the
      * customer or items, so {@link com.example.orderservice.service.ReportService}
@@ -34,13 +34,16 @@ public interface PurchaseOrderRepository extends JpaRepository<PurchaseOrder, Lo
     })
     @Query("""
             select o from PurchaseOrder o
-            where o.createdAt between :from and :to
+            where o.customer.id = :customerId
+              and o.createdAt between :from and :to
             order by o.createdAt asc
             """)
-    Stream<PurchaseOrder> streamByCreatedAtBetween(@Param("from") Instant from, @Param("to") Instant to);
+    Stream<PurchaseOrder> streamByCustomerIdAndCreatedAtBetween(@Param("customerId") Long customerId,
+                                                                @Param("from") Instant from,
+                                                                @Param("to") Instant to);
 
     /**
-     * Heavy report: a paginated orders feed with each order's line items.
+     * Heavy report: a paginated feed of one customer's orders with line items.
      *
      * <p>ANTI-PATTERN (demo): this combines a collection {@code join fetch} with a
      * {@link Pageable}. Because the join multiplies each order into one row per
@@ -56,9 +59,11 @@ public interface PurchaseOrderRepository extends JpaRepository<PurchaseOrder, Lo
     @Query("""
             select distinct o from PurchaseOrder o
             left join fetch o.items
-            where o.createdAt between :from and :to
+            where o.customer.id = :customerId
+              and o.createdAt between :from and :to
             """)
-    List<PurchaseOrder> findOrdersWithItems(@Param("from") Instant from,
-                                            @Param("to") Instant to,
-                                            Pageable pageable);
+    List<PurchaseOrder> findOrdersWithItemsByCustomerId(@Param("customerId") Long customerId,
+                                                        @Param("from") Instant from,
+                                                        @Param("to") Instant to,
+                                                        Pageable pageable);
 }

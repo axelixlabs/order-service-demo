@@ -65,10 +65,12 @@ class PurchaseOrderRepositoryTest {
     }
 
     @Test
-    void findOrdersWithItemsAppliesPagingAndFetchesItems() {
-        // Two orders in the window, sharing one customer and catalogue.
+    void findOrdersWithItemsByCustomerIdAppliesPagingAndFetchesItems() {
+        // Two orders in the window for the same customer; a second customer is ignored.
         Customer customer = new Customer("Ada", "Lovelace", "ada@example.com", "+1");
         customerRepository.save(customer);
+        Customer other = new Customer("Grace", "Hopper", "grace@example.com", "+1");
+        customerRepository.save(other);
         Category cat = categoryRepository.save(new Category("Electronics", "d"));
         Product keyboard = productRepository.save(new Product("SKU-KB", "Keyboard", "d", new BigDecimal("100.00"), 100, cat));
         Product mouse = productRepository.save(new Product("SKU-MS", "Mouse", "d", new BigDecimal("25.00"), 100, cat));
@@ -78,8 +80,12 @@ class PurchaseOrderRepositoryTest {
             order.addItem(new OrderItem(mouse, 4));
             orderRepository.save(order);
         }
+        PurchaseOrder otherOrder = new PurchaseOrder("ORD-OTHER", other);
+        otherOrder.addItem(new OrderItem(keyboard, 1));
+        orderRepository.save(otherOrder);
 
-        List<PurchaseOrder> firstPage = orderRepository.findOrdersWithItems(
+        List<PurchaseOrder> firstPage = orderRepository.findOrdersWithItemsByCustomerId(
+                customer.getId(),
                 Instant.now().minusSeconds(3600),
                 Instant.now().plusSeconds(3600),
                 PageRequest.of(0, 1, Sort.by("createdAt").ascending()));
@@ -88,15 +94,24 @@ class PurchaseOrderRepositoryTest {
         // Under the hood Hibernate paged this IN MEMORY (HHH000104) because of the
         // collection fetch — the point of the demo.
         assertThat(firstPage).hasSize(1);
+        assertThat(firstPage.get(0).getCustomer().getId()).isEqualTo(customer.getId());
         assertThat(firstPage.get(0).getItems()).hasSize(2);
     }
 
     @Test
-    void streamByCreatedAtBetweenReturnsOrders() {
-        persistSampleOrder();
+    void streamByCustomerIdAndCreatedAtBetweenReturnsOnlyThatCustomersOrders() {
+        PurchaseOrder saved = persistSampleOrder();
+        Customer other = new Customer("Grace", "Hopper", "grace@example.com", "+1");
+        customerRepository.save(other);
+        Category cat = categoryRepository.findAll().get(0);
+        Product keyboard = productRepository.findAll().get(0);
+        PurchaseOrder otherOrder = new PurchaseOrder("ORD-OTHER", other);
+        otherOrder.addItem(new OrderItem(keyboard, 1));
+        orderRepository.save(otherOrder);
 
         long count;
-        try (var stream = orderRepository.streamByCreatedAtBetween(
+        try (var stream = orderRepository.streamByCustomerIdAndCreatedAtBetween(
+                saved.getCustomer().getId(),
                 Instant.now().minusSeconds(3600), Instant.now().plusSeconds(3600))) {
             count = stream.count();
         }
