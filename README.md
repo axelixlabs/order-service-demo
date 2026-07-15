@@ -36,7 +36,7 @@ keyword). Order status transitions are validated by a small state machine in
 | Method | Path                          | Description                                    |
 |--------|-------------------------------|------------------------------------------------|
 | POST   | `/api/v1/orders`              | Create an order (locks stock, publishes Kafka) |
-| GET    | `/api/v1/orders/{id}`         | Fetch a single order (single fetch-join query) |
+| GET    | `/api/v1/orders/{id}`         | Fetch a single order                           |
 | PATCH  | `/api/v1/orders/{id}/status`  | Advance the order lifecycle                    |
 
 Creating an order publishes an `OrderCreatedEvent` to the `order-events` Kafka
@@ -47,10 +47,28 @@ topic **after the transaction commits**. A sample `@KafkaListener` consumes it.
 | Method | Path                                    | Description                                         |
 |--------|-----------------------------------------|-----------------------------------------------------|
 | GET    | `/api/v1/reports/orders/export`         | Streams a CSV of all orders in a window (cursor)    |
-| GET    | `/api/v1/reports/sales-summary`         | DB-side aggregation of units/revenue per product    |
+| GET    | `/api/v1/reports/orders`                | Paginated orders feed, each order with its items    |
 
 Both accept ISO-8601 `from`/`to` query params, e.g.
-`?from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z`.
+`?from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z`; the orders feed also
+accepts `page` and `size`.
+
+### Intentional performance anti-patterns
+
+This is a teaching demo, so three of the endpoints above deliberately ship with
+classic JPA/Hibernate traps. Each is marked `ANTI-PATTERN (demo)` in the code
+with an explanation and the fix. Set `spring.jpa.show-sql: true` and watch the
+SQL to see them fire.
+
+| Endpoint | Anti-pattern | What goes wrong |
+|--|--|--|
+| `GET /api/v1/orders/{id}` | **N+1** | Loaded via plain `findById`; building the response then lazily loads items, each item's product, the customer, payment and shipment — a separate SELECT each. |
+| `GET /api/v1/reports/orders/export` | **N+1** | The streaming query fetches no associations, so every CSV row lazily loads its customer and items. |
+| `GET /api/v1/reports/orders` | **In-memory pagination (by Hibernate)** | The repository query combines a collection `join fetch` with a `Pageable`. Hibernate can't translate the page to SQL `LIMIT`/`OFFSET`, so it loads the whole window and pages *in memory* — logging `HHH90003004: firstResult/maxResults specified with collection fetch; applying in memory`. No manual slicing is written; Hibernate does the paging. |
+
+The `OrderServiceTest`, `ReportServiceTest` and `PurchaseOrderRepositoryTest`
+document the intended (correct) contracts; the fixes are described inline next
+to each anti-pattern.
 
 ## Running the whole stack
 
@@ -85,8 +103,8 @@ curl http://localhost:8080/api/v1/orders/1
 curl -X PATCH http://localhost:8080/api/v1/orders/1/status \
   -H 'Content-Type: application/json' -d '{"status":"PAID"}'
 
-# Heavy: sales summary
-curl 'http://localhost:8080/api/v1/reports/sales-summary?from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z'
+# Heavy: paginated orders feed (watch the logs for HHH90003004 in-memory paging)
+curl 'http://localhost:8080/api/v1/reports/orders?from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z&page=0&size=20'
 
 # Heavy: CSV export
 curl 'http://localhost:8080/api/v1/reports/orders/export?from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z'

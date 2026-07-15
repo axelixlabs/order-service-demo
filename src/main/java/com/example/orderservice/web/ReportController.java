@@ -1,7 +1,7 @@
 package com.example.orderservice.web;
 
 import com.example.orderservice.service.ReportService;
-import com.example.orderservice.web.dto.SalesSummaryResponse;
+import com.example.orderservice.web.dto.OrderResponse;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 import java.time.Instant;
+import java.util.List;
 
 /**
  * Heavy/reporting API surface. These endpoints read large volumes of data and
@@ -46,13 +47,16 @@ public class ReportController {
     }
 
     /**
-     * Heavy path #2 — aggregated sales summary per product/category. The grouping
-     * and summation are pushed down to the database.
+     * Heavy path #2 — paginated orders feed (each order with its line items).
+     * The page is requested via {@code page}/{@code size}, but Hibernate paginates
+     * it in memory because of the collection fetch join (see the service note).
      */
-    @GetMapping("/sales-summary")
-    public SalesSummaryResponse salesSummary(
+    @GetMapping("/orders")
+    public List<OrderResponse> ordersFeed(
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant from,
-            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant to) {
-        return reportService.salesSummary(from, to);
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant to,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return reportService.ordersFeed(from, to, page, size);
     }
 }

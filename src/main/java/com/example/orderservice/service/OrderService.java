@@ -92,10 +92,19 @@ public class OrderService {
         return saved;
     }
 
-    /** HOT PATH: fetch a fully-populated order for display. */
+    /**
+     * HOT PATH: fetch a single order for display.
+     *
+     * <p>ANTI-PATTERN (demo): loads the order with a plain {@code findById}, so
+     * every lazy association touched while building the response — the items
+     * collection, each item's product, the customer, the payment and the
+     * shipment — fires its own SELECT. On a hot path this is the most damaging
+     * N+1 in the app. FIX: use a single {@code join fetch} query (or an
+     * {@code @EntityGraph}) that pulls the items and their products up front.
+     */
     @Transactional(readOnly = true)
     public PurchaseOrder getOrder(Long id) {
-        return orderRepository.findDetailedById(id)
+        return orderRepository.findById(id)
                 .orElseThrow(() -> ResourceNotFoundException.of("Order", id));
     }
 

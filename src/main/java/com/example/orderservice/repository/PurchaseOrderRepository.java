@@ -1,8 +1,8 @@
 package com.example.orderservice.repository;
 
-import com.example.orderservice.domain.OrderStatus;
 import com.example.orderservice.domain.PurchaseOrder;
 import jakarta.persistence.QueryHint;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.jpa.repository.QueryHints;
@@ -18,21 +18,15 @@ public interface PurchaseOrderRepository extends JpaRepository<PurchaseOrder, Lo
     Optional<PurchaseOrder> findByOrderNumber(String orderNumber);
 
     /**
-     * Hot-path read: fetch a single order together with its items and each
-     * item's product in one query to avoid N+1 selects.
-     */
-    @Query("""
-            select distinct o from PurchaseOrder o
-            left join fetch o.items i
-            left join fetch i.product
-            join fetch o.customer
-            where o.id = :id
-            """)
-    Optional<PurchaseOrder> findDetailedById(@Param("id") Long id);
-
-    /**
      * Heavy report: stream all orders in a date window without loading them all
      * into memory at once. Must be consumed inside a read-only transaction.
+     *
+     * <p>ANTI-PATTERN (demo): this deliberately does NOT {@code join fetch} the
+     * customer or items, so {@link com.example.orderservice.service.ReportService}
+     * triggers a fresh SELECT per row while writing the CSV — a classic N+1.
+     * FIX: add {@code join fetch o.customer} (items can't be fetch-joined here
+     * without breaking the streaming cursor; use a batch-size hint or a two-step
+     * load instead).
      */
     @QueryHints({
             @QueryHint(name = org.hibernate.jpa.HibernateHints.HINT_FETCH_SIZE, value = "200"),
@@ -40,36 +34,31 @@ public interface PurchaseOrderRepository extends JpaRepository<PurchaseOrder, Lo
     })
     @Query("""
             select o from PurchaseOrder o
-            join fetch o.customer
             where o.createdAt between :from and :to
             order by o.createdAt asc
             """)
     Stream<PurchaseOrder> streamByCreatedAtBetween(@Param("from") Instant from, @Param("to") Instant to);
 
     /**
-     * Heavy report: aggregate units sold and revenue per product/category over a
-     * date window. Runs entirely in the database and returns a compact projection.
+     * Heavy report: a paginated orders feed with each order's line items.
+     *
+     * <p>ANTI-PATTERN (demo): this combines a collection {@code join fetch} with a
+     * {@link Pageable}. Because the join multiplies each order into one row per
+     * item, Hibernate cannot express the page as SQL {@code LIMIT}/{@code OFFSET}
+     * — so it loads the ENTIRE matching result set and paginates it IN MEMORY,
+     * logging {@code HHH000104: firstResult/maxResults specified with collection
+     * fetch; applying in memory!}. We write no {@code skip()/limit()} ourselves;
+     * Hibernate does the (in-memory) paging. FIX: paginate the root ids first
+     * (a plain {@code Page<Long>} query with no fetch), then fetch items for just
+     * that page in a second query — or use {@code @BatchSize}/subselect fetching.
      */
+    @QueryHints(@QueryHint(name = org.hibernate.jpa.HibernateHints.HINT_READ_ONLY, value = "true"))
     @Query("""
-            select
-                c.id           as categoryId,
-                c.name         as categoryName,
-                p.id           as productId,
-                p.sku          as productSku,
-                p.name         as productName,
-                sum(i.quantity) as unitsSold,
-                sum(i.lineTotal) as grossRevenue,
-                count(distinct o.id) as orderCount
-            from OrderItem i
-            join i.order o
-            join i.product p
-            join p.category c
+            select distinct o from PurchaseOrder o
+            left join fetch o.items
             where o.createdAt between :from and :to
-              and o.status <> :excluded
-            group by c.id, c.name, p.id, p.sku, p.name
-            order by sum(i.lineTotal) desc
             """)
-    List<SalesSummaryRow> aggregateSales(@Param("from") Instant from,
-                                         @Param("to") Instant to,
-                                         @Param("excluded") OrderStatus excluded);
+    List<PurchaseOrder> findOrdersWithItems(@Param("from") Instant from,
+                                            @Param("to") Instant to,
+                                            Pageable pageable);
 }

@@ -6,12 +6,12 @@ import com.example.orderservice.domain.OrderItem;
 import com.example.orderservice.domain.Product;
 import com.example.orderservice.domain.PurchaseOrder;
 import com.example.orderservice.repository.PurchaseOrderRepository;
-import com.example.orderservice.repository.SalesSummaryRow;
-import com.example.orderservice.web.dto.SalesSummaryResponse;
+import com.example.orderservice.web.dto.OrderResponse;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.Pageable;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.ByteArrayOutputStream;
@@ -54,30 +54,25 @@ class ReportServiceTest {
     }
 
     @Test
-    void salesSummaryAggregatesTotals() {
-        SalesSummaryRow row1 = row(1L, "Electronics", 100L, "SKU-1", "Keyboard", 3, new BigDecimal("300.00"), 2);
-        SalesSummaryRow row2 = row(1L, "Electronics", 101L, "SKU-2", "Mouse", 5, new BigDecimal("125.00"), 4);
-        when(orderRepository.aggregateSales(any(), any(), any())).thenReturn(List.of(row1, row2));
+    void ordersFeedRequestsPageableAndMapsResults() {
+        Customer customer = new Customer("Ada", "Lovelace", "ada@example.com", "+1");
+        ReflectionTestUtils.setField(customer, "id", 1L);
+        Category cat = new Category("Electronics", "d");
+        Product product = new Product("SKU-1", "Keyboard", "d", new BigDecimal("100.00"), 5, cat);
+
+        PurchaseOrder order = new PurchaseOrder("ORD-ABC", customer);
+        order.addItem(new OrderItem(product, 2));
+        ReflectionTestUtils.setField(order, "id", 42L);
+
+        when(orderRepository.findOrdersWithItems(any(), any(), any(Pageable.class)))
+                .thenReturn(List.of(order));
 
         ReportService service = new ReportService(orderRepository);
-        SalesSummaryResponse response = service.salesSummary(Instant.now(), Instant.now());
+        List<OrderResponse> feed = service.ordersFeed(Instant.now(), Instant.now(), 0, 20);
 
-        assertThat(response.rows()).hasSize(2);
-        assertThat(response.totalUnits()).isEqualTo(8);
-        assertThat(response.totalRevenue()).isEqualByComparingTo("425.00");
-    }
-
-    private static SalesSummaryRow row(Long catId, String catName, Long prodId, String sku,
-                                       String name, long units, BigDecimal revenue, long orders) {
-        return new SalesSummaryRow() {
-            public Long getCategoryId() { return catId; }
-            public String getCategoryName() { return catName; }
-            public Long getProductId() { return prodId; }
-            public String getProductSku() { return sku; }
-            public String getProductName() { return name; }
-            public long getUnitsSold() { return units; }
-            public BigDecimal getGrossRevenue() { return revenue; }
-            public long getOrderCount() { return orders; }
-        };
+        assertThat(feed).hasSize(1);
+        assertThat(feed.get(0).orderNumber()).isEqualTo("ORD-ABC");
+        assertThat(feed.get(0).items()).hasSize(1);
+        assertThat(feed.get(0).totalAmount()).isEqualByComparingTo("200.00");
     }
 }

@@ -162,7 +162,7 @@ class OrderServiceTest {
 
     @Test
     void getOrderThrowsWhenMissing() {
-        when(orderRepository.findDetailedById(999L)).thenReturn(Optional.empty());
+        when(orderRepository.findById(999L)).thenReturn(Optional.empty());
         assertThatThrownBy(() -> orderService.getOrder(999L))
                 .isInstanceOf(ResourceNotFoundException.class);
     }

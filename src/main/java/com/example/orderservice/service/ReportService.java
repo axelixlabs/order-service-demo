@@ -1,10 +1,11 @@
 package com.example.orderservice.service;
 
-import com.example.orderservice.domain.OrderStatus;
 import com.example.orderservice.domain.PurchaseOrder;
 import com.example.orderservice.repository.PurchaseOrderRepository;
-import com.example.orderservice.repository.SalesSummaryRow;
-import com.example.orderservice.web.dto.SalesSummaryResponse;
+import com.example.orderservice.web.dto.OrderResponse;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -30,8 +31,14 @@ public class ReportService {
 
     /**
      * HEAVY PATH: stream every order in the window straight to the HTTP response
-     * as CSV. Because it runs inside a read-only transaction and consumes a JDBC
-     * cursor, memory stays flat regardless of how many rows match.
+     * as CSV. It runs inside a read-only transaction and consumes a JDBC cursor,
+     * so the row count never blows up heap.
+     *
+     * <p>ANTI-PATTERN (demo): the streaming query does not fetch associations,
+     * so {@code order.getCustomer().getEmail()} and {@code order.getItems()}
+     * below each lazily load per row — an N+1 that runs once for every order in
+     * the export. FIX: {@code join fetch} the customer in the query and load item
+     * counts via a projection or a batched secondary query.
      */
     @Transactional(readOnly = true)
     public void exportOrdersCsv(Instant from, Instant to, OutputStream out) {
@@ -52,14 +59,22 @@ public class ReportService {
     }
 
     /**
-     * HEAVY PATH: aggregate sales per product/category over a window. The heavy
-     * lifting (grouping and summing across potentially many order items) runs in
-     * the database; only the compact rollup crosses the wire.
+     * HEAVY PATH: a paginated orders feed, each order with its line items.
+     *
+     * <p>ANTI-PATTERN (demo): the backing query {@code join fetch}es the items
+     * collection AND takes a {@link Pageable}. Hibernate can't turn that page into
+     * SQL {@code LIMIT}/{@code OFFSET}, so it fetches the whole window and pages IN
+     * MEMORY (watch for {@code HHH000104} in the logs). Note there is no manual
+     * slicing here — we just hand Hibernate a {@code Pageable} and it does the
+     * (in-memory) paging for us, which is exactly the trap. See the repository
+     * method for the fix.
      */
     @Transactional(readOnly = true)
-    public SalesSummaryResponse salesSummary(Instant from, Instant to) {
-        List<SalesSummaryRow> rows = orderRepository.aggregateSales(from, to, OrderStatus.CANCELLED);
-        return SalesSummaryResponse.of(from, to, rows);
+    public List<OrderResponse> ordersFeed(Instant from, Instant to, int page, int size) {
+        Pageable pageable = PageRequest.of(page, size, Sort.by("createdAt").ascending());
+        return orderRepository.findOrdersWithItems(from, to, pageable).stream()
+                .map(OrderResponse::from)
+                .toList();
     }
 
     private void writeLine(Writer writer, String... cells) {
