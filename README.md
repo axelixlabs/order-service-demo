@@ -342,3 +342,32 @@ fraction of the memory; the baseline needs a big heap **and still collapses**.
 > The entity model had **no eager fetches to remove** — every `@ManyToOne` /
 > `@OneToOne` was already `LAZY`. The damage came from *how the data was queried*
 > (the three patterns above) plus OSIV, not from eager mappings.
+
+### Runtime footprint: compact object headers + AOT cache (RSS)
+
+Separately from the JPA fixes, the `axelix-applied` branch also runs the JVM with two
+footprint features that this `main` branch does not: **compact object headers**
+(`-XX:+UseCompactObjectHeaders`, Project Lilliput — 8-byte object headers) and an
+**AOT class-loading/linking cache** (`-XX:AOTCache`, Project Leyden, built during the
+image build). Measured on the same code and `-Xmx1g` under an identical moderate
+steady load (~52 req/s of the read endpoints, 0 errors on both runs), toggling the two
+flags together — i.e. what `main` runs (neither) vs what `axelix-applied` runs (both):
+
+| RSS at… | Neither (like `main`) | Both (COH + AOT) | Reduction |
+|--|--:|--:|--:|
+| Idle (after startup) | 521 MB | 407 MB | **−114 MB (−22%)** |
+| Steady load (avg) | 618 MB | 533 MB | **−85 MB (−14%)** |
+| Steady load (peak) | 638 MB | 571 MB | −67 MB (−10%) |
+| Settled (post-load) | 638 MB | 572 MB | −66 MB (−10%) |
+| *peak heap used* | *122 MB* | *121 MB* | *~0* |
+
+The two together cut **~65–115 MB of RSS (≈10–22%)**, largest at idle/startup.
+
+**Attribution:** peak *heap* used is identical (122 vs 121 MB), so the reduction is
+almost entirely the **AOT cache** — class metadata served from the mapped archive
+means less metaspace, code cache and committed native memory (all off-heap).
+**Compact object headers** shrink only the object heap (~8% on this app's real object
+mix, from a heap class histogram — the 8-byte header saving nets 0–8 bytes/object after
+field alignment), which is ~10 MB here; their share grows on apps that retain a larger
+live heap. Note the AOT cache is created with compact headers on, so it only loads when
+`-XX:+UseCompactObjectHeaders` is set too.
