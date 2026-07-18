@@ -54,22 +54,15 @@ Both accept a required `customerId` plus ISO-8601 `from`/`to` query params, e.g.
 `?customerId=1&from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z`; the orders feed also
 accepts `page` and `size`.
 
-### Intentional performance anti-patterns
+### Performance anti-patterns (this branch is the baseline)
 
-This is a teaching demo, so three of the endpoints above deliberately ship with
-classic JPA/Hibernate traps. Each is marked `ANTI-PATTERN (demo)` in the code
-with an explanation and the fix. Set `spring.jpa.show-sql: true` and watch the
-SQL to see them fire.
-
-| Endpoint | Anti-pattern | What goes wrong |
-|--|--|--|
-| `GET /api/v1/orders/{id}` | **N+1** | Loaded via plain `findById`; building the response then lazily loads items, each item's product, the customer, payment and shipment — a separate SELECT each. |
-| `GET /api/v1/reports/orders/export` | **N+1** | The streaming query fetches no associations, so every CSV row lazily loads its customer and items. |
-| `GET /api/v1/reports/orders` | **In-memory pagination (by Hibernate)** | The repository query combines a collection `join fetch` with a `Pageable`. Hibernate can't translate the page to SQL `LIMIT`/`OFFSET`, so it loads the whole window and pages *in memory* — logging `HHH90003004: firstResult/maxResults specified with collection fetch; applying in memory`. No manual slicing is written; Hibernate does the paging. |
-
-The `OrderServiceTest`, `ReportServiceTest` and `PurchaseOrderRepositoryTest`
-document the intended (correct) contracts; the fixes are described inline next
-to each anti-pattern.
+The heavy endpoints originally shipped with three classic JPA/Hibernate traps —
+an N+1 on `GET /orders/{id}`, an N+1 on the CSV export, and Hibernate
+*in-memory pagination* on the orders feed — compounded by Open-Session-In-View
+holding a DB connection through response serialization. They were load-tested to
+quantify the damage and then fixed on the `axelix-applied` branch. See
+[Performance under load](#performance-under-load-baseline-vs-fixed) for the
+measured impact, the root causes, and the fixes.
 
 ## Running the whole stack
 
@@ -217,27 +210,135 @@ The built-in `DataSeeder` skips automatically when products already exist.
 
 ## Load testing (k6)
 
-A TypeScript k6 scenario exercises the hot and heavy APIs with a 5-minute ramp
-(30 → 45 → 90 → 45 → 30 virtual users). Each virtual user maps to a customer
-(`customerId = VU id` against bulk-loaded data), then:
+Two TypeScript k6 scenarios live under `load-tests/`:
 
-1. Fetches the last and second-to-last pages of the orders feed (10 per page)
-2. Creates three orders (30 s apart), transitions them through PAID / PROCESSING /
-   CANCELLED, re-reads the feed, and downloads the CSV export
+**`order-flow.ts` — realistic user journey.** A 5-minute ramp
+(15 → 23 → 45 → 23 → 15 virtual users) with think-time. Each virtual user maps to
+a customer (`customerId = VU id` against bulk-loaded data) and fetches the last
+two feed pages, creates three orders (30 s apart), transitions them through
+PAID / PROCESSING / CANCELLED, re-reads the feed, and downloads the CSV export.
+With its think-time this is a low-rate (~6 req/s) workload — healthy on both
+branches.
 
 ```bash
 # App must be running with test data loaded
 ./load-tests/run-order-flow.sh
-
 # Or directly:
 cd load-tests && k6 run order-flow.ts
-```
-
-For the small demo seed customer only (no bulk load):
-
-```bash
+# Small demo seed customer only (no bulk load):
 SEED_MODE=true ./load-tests/run-order-flow.sh
 ```
 
-Optional environment variables: `BASE_URL`, `CUSTOMER_COUNT`, `FEED_FROM`,
-`FEED_SIZE`. Install `@types/k6` for IDE support: `cd load-tests && npm install`.
+**`stress.ts` — read-only stress test.** A `ramping-arrival-rate` scenario
+(10 → 60 req/s over 3 minutes, **no think-time**) that hammers only the heavy
+read paths — orders feed (random page), `getOrder` (random id), and a CSV export
+10 % of the time. This is the workload used for the numbers in
+[Performance under load](#performance-under-load-baseline-vs-fixed); it is what
+actually stresses the pool and surfaces the anti-patterns.
+
+```bash
+cd load-tests && k6 run -e CUSTOMERS=10 -e ORDERS=20000 -e FEED_SIZE=10 stress.ts
+```
+
+Optional environment variables: `BASE_URL`, `CUSTOMER_COUNT`/`CUSTOMERS`,
+`ORDERS`, `FEED_FROM`, `FEED_SIZE`. Install `@types/k6` for IDE support:
+`cd load-tests && npm install`.
+
+## Performance under load (baseline vs fixed)
+
+The three anti-patterns were benchmarked with the read-only `stress.ts` load.
+The baseline (this `main` branch) collapses under load; the `axelix-applied`
+branch, with the fixes, does not. Numbers below are from a single host — absolute values
+will vary, but the relative gap is large and reproducible.
+
+### Reproducible setup
+
+- **Stack:** `docker compose up -d` — Postgres 16, Kafka (KRaft), the app,
+  Prometheus, Grafana.
+- **Connection pool:** Hikari **max 10** (`application.yml`, identical on both
+  branches — the bounded pool is what makes the anti-patterns bite).
+- **Dataset** (deterministic via `--seed`, loads in seconds):
+
+  ```bash
+  ./scripts/load-test-data.sh --customers 10 --orders 20000 --seed 42
+  ```
+
+  → 10 categories, **1,000 products**, **10 customers** + 20 addresses,
+  **20,000 orders (2,000 per customer)**, 50,000 line items, 20k payments, 20k
+  shipments. *Few customers with many orders each* is deliberate: it makes the
+  feed's in-memory pagination and the CSV export's per-row N+1 expensive.
+
+- **Load:** `load-tests/stress.ts` — k6 `ramping-arrival-rate`, **10 → 60 req/s
+  over 3 min, no think-time**. Each iteration = 1 orders-feed (random page) +
+  1 `getOrder` (random id) + a CSV export 10 % of the time.
+- **Heap:** exercised at a generous `-Xmx1g` and a constrained `-Xmx384m`
+  (set via the app's `JAVA_OPTS`).
+
+**To reproduce**, run the same steps on each branch and compare — e.g.:
+
+```bash
+git checkout main          # or axelix-applied
+docker compose up -d --build
+./scripts/load-test-data.sh --customers 10 --orders 20000 --seed 42
+docker compose restart app          # start fresh so metric counters reset
+cd load-tests && k6 run -e CUSTOMERS=10 -e ORDERS=20000 stress.ts
+```
+
+Read per-endpoint rate / error / latency from the Grafana **“Order Service — RED
+per endpoint”** dashboard (or `/actuator/prometheus`); memory/GC from
+`jvm_gc_memory_allocated_bytes_total`, `jvm_gc_pause_seconds_*`, and
+`process_resident_memory_bytes`.
+
+### Results — generous heap (`-Xmx1g`)
+
+| Signal | `main` (baseline) | `axelix-applied` (fixed) |
+|--|--|--|
+| Requests served in 3 min | 6,231 — **4,074 dropped** (couldn't keep up) | **14,847** (0 dropped) |
+| p95 latency | **17.1 s** | **10.6 ms** |
+| CSV export mean latency | **31.6 s** | 11.5 ms |
+| `GET /orders/{id}` mean | 4.96 s | 2.8 ms |
+| `GET /reports/orders` mean | 5.28 s | 6.3 ms |
+| Client-side failure rate (k6) | **1.92 %** | **0.00 %** |
+| **CSV export error rate (5xx)** | **23.1 %** (116/502) | **0 %** |
+| Bytes allocated | **85 GB** | 4.1 GB (**20.8× less**) |
+| GC pauses / time in GC | **587 / 7.72 s** | 50 / 0.08 s (**~100× less GC**) |
+| RSS peak | 1.15 GB | 1.15 GB (both fill the 1 GB heap) |
+
+**Per-endpoint error rate:** only the CSV export returns outright **5xx** on the
+baseline (**23 % → 0 %**). The feed and `getOrder` show ~0 % *server* errors on
+both — but only because the baseline was so slow that k6 **dropped 4,074 requests
+it never managed to send**. Their real regression is latency (seconds → ms) and
+throughput collapse, not HTTP status.
+
+### Results — constrained heap (`-Xmx384m`): the memory-footprint story
+
+RSS looks the same above because both JVMs simply fill a 1 GB heap. The real
+difference is the *working set* — shrink the heap and the baseline falls apart
+while the fixed build is unaffected:
+
+| Signal | `main` (baseline) | `axelix-applied` (fixed) |
+|--|--|--|
+| Requests served | 5,305 | **14,839** |
+| CSV export error rate | 12.8 % | **0 %** |
+| p95 latency | **52.8 s** | 20.9 ms |
+| Bytes allocated | 64.5 GB | 3.9 GB (**16× less**) |
+| GC pauses / time in GC | **1,035 / 8.49 s** | 48 / 0.06 s (**~137× less GC**) |
+
+**`axelix-applied` runs identically well in 384 MB as in 1 GB** (≈14.8k requests,
+0 errors, p95 ~21 ms either way). The baseline degrades *further* as the heap
+shrinks — it GC-thrashes (1,035 pauses) just to stay alive. That is the footprint
+reduction: the fixed build's per-request working set is tiny, so it thrives in a
+fraction of the memory; the baseline needs a big heap **and still collapses**.
+
+### What caused it (root causes → fixes)
+
+| Endpoint | Root cause on `main` (this branch) | Effect | Fix (on `axelix-applied`) |
+|--|--|--|--|
+| `GET /reports/orders` | Collection `join fetch` + `Pageable` → Hibernate loads **all 2,000 of the customer's orders into heap and paginates in memory**, on every request regardless of page — plus N+1 (payment / shipment / customer / product per order). | The 85 GB of garbage, GC thrash, multi-second latency. | **Two-step:** page order **ids** in SQL (`LIMIT`/`OFFSET`), then one fetch-join for just that page. |
+| `GET /orders/{id}` | Plain `findById`; items, each product, the customer, payment and shipment lazily load during serialization (N+1). | Extra round-trips per request under a busy pool. | One **fetch-join** query loads the whole response graph. |
+| `GET /reports/orders/export` | Streams every row while lazily loading `customer.email` + `items.size()` per order, **holding one pooled connection for the entire multi-second stream**. | Pool exhaustion → **5xx**. | Flat **projection**: `customer.email` joined and `count(items)` computed in SQL — no per-row loads. |
+| *(cross-cutting)* | **Open-Session-In-View enabled** → the connection is held through JSON serialization, so slow N+1 requests occupy the 10-connection pool for seconds. | Connection-acquisition timeouts under load → 5xx + throughput collapse. | `spring.jpa.open-in-view: false`; connections released when the service transaction ends (ms, not seconds). |
+
+> The entity model had **no eager fetches to remove** — every `@ManyToOne` /
+> `@OneToOne` was already `LAZY`. The damage came from *how the data was queried*
+> (the three patterns above) plus OSIV, not from eager mappings.
