@@ -93,25 +93,25 @@ public class OrderService {
     }
 
     /**
-     * HOT PATH: fetch a single order for display.
-     *
-     * <p>ANTI-PATTERN (demo): loads the order with a plain {@code findById}, so
-     * every lazy association touched while building the response — the items
-     * collection, each item's product, the customer, the payment and the
-     * shipment — fires its own SELECT. On a hot path this is the most damaging
-     * N+1 in the app. FIX: use a single {@code join fetch} query (or an
-     * {@code @EntityGraph}) that pulls the items and their products up front.
+     * HOT PATH: fetch a single order for display. Loads the whole response graph
+     * (items + their products, customer, payment, shipment) in ONE fetch-join
+     * query, so building the DTO fires no extra SELECTs — even with open-in-view
+     * disabled and the mapping happening after the transaction closes.
      */
     @Transactional(readOnly = true)
     public PurchaseOrder getOrder(Long id) {
-        return orderRepository.findById(id)
+        return orderRepository.findByIdWithDetails(id)
                 .orElseThrow(() -> ResourceNotFoundException.of("Order", id));
     }
 
-    /** HOT PATH: advance the order through its lifecycle. */
+    /**
+     * HOT PATH: advance the order through its lifecycle. Loads the full graph so the
+     * status transition runs against a managed entity and the returned order is fully
+     * initialized for the response mapping (no lazy access outside the transaction).
+     */
     @Transactional
     public PurchaseOrder updateStatus(Long id, OrderStatus target) {
-        PurchaseOrder order = orderRepository.findById(id)
+        PurchaseOrder order = orderRepository.findByIdWithDetails(id)
                 .orElseThrow(() -> ResourceNotFoundException.of("Order", id));
         order.transitionTo(target);
         return order;

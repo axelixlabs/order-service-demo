@@ -3,9 +3,11 @@ package com.example.orderservice.service;
 import com.example.orderservice.domain.Category;
 import com.example.orderservice.domain.Customer;
 import com.example.orderservice.domain.OrderItem;
+import com.example.orderservice.domain.OrderStatus;
 import com.example.orderservice.domain.Product;
 import com.example.orderservice.domain.PurchaseOrder;
 import com.example.orderservice.repository.PurchaseOrderRepository;
+import com.example.orderservice.web.dto.OrderCsvRow;
 import com.example.orderservice.web.dto.OrderResponse;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -34,17 +36,13 @@ class ReportServiceTest {
 
     @Test
     void exportOrdersCsvWritesHeaderAndRows() {
-        Customer customer = new Customer("Ada", "Lovelace", "ada@example.com", "+1");
-        ReflectionTestUtils.setField(customer, "id", 7L);
-        Category cat = new Category("Electronics", "d");
-        Product product = new Product("SKU-1", "Keyboard", "d", new BigDecimal("100.00"), 5, cat);
+        // The repository now returns a flat projection (no entity, no lazy loads).
+        OrderCsvRow row = new OrderCsvRow(
+                "ORD-ABC", OrderStatus.CREATED, "ada@example.com", 1L,
+                new BigDecimal("200.00"), Instant.parse("2026-01-01T00:00:00Z"));
 
-        PurchaseOrder order = new PurchaseOrder("ORD-ABC", customer);
-        order.addItem(new OrderItem(product, 2));
-        ReflectionTestUtils.setField(order, "createdAt", Instant.parse("2026-01-01T00:00:00Z"));
-
-        when(orderRepository.streamByCustomerIdAndCreatedAtBetween(eq(7L), any(), any()))
-                .thenReturn(Stream.of(order));
+        when(orderRepository.streamOrderCsvRows(eq(7L), any(), any()))
+                .thenReturn(Stream.of(row));
 
         ReportService service = new ReportService(orderRepository);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -57,7 +55,7 @@ class ReportServiceTest {
     }
 
     @Test
-    void ordersFeedRequestsPageableAndMapsResults() {
+    void ordersFeedPagesIdsThenFetchesDetailsAndMaps() {
         Customer customer = new Customer("Ada", "Lovelace", "ada@example.com", "+1");
         ReflectionTestUtils.setField(customer, "id", 1L);
         Category cat = new Category("Electronics", "d");
@@ -67,7 +65,10 @@ class ReportServiceTest {
         order.addItem(new OrderItem(product, 2));
         ReflectionTestUtils.setField(order, "id", 42L);
 
-        when(orderRepository.findOrdersWithItemsByCustomerId(eq(1L), any(), any(), any(Pageable.class)))
+        // Step 1 returns the page of ids; step 2 fetches the full graph for them.
+        when(orderRepository.findOrderIdsByCustomer(eq(1L), any(), any(), any(Pageable.class)))
+                .thenReturn(List.of(42L));
+        when(orderRepository.findOrdersWithDetailsByIds(List.of(42L)))
                 .thenReturn(List.of(order));
 
         ReportService service = new ReportService(orderRepository);
@@ -77,5 +78,16 @@ class ReportServiceTest {
         assertThat(feed.get(0).orderNumber()).isEqualTo("ORD-ABC");
         assertThat(feed.get(0).items()).hasSize(1);
         assertThat(feed.get(0).totalAmount()).isEqualByComparingTo("200.00");
+    }
+
+    @Test
+    void ordersFeedShortCircuitsWhenNoIdsOnPage() {
+        when(orderRepository.findOrderIdsByCustomer(eq(1L), any(), any(), any(Pageable.class)))
+                .thenReturn(List.of());
+
+        ReportService service = new ReportService(orderRepository);
+        List<OrderResponse> feed = service.ordersFeed(1L, Instant.now(), Instant.now(), 5, 20);
+
+        assertThat(feed).isEmpty();
     }
 }

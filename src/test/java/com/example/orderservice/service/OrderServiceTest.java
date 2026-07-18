@@ -144,7 +144,7 @@ class OrderServiceTest {
     void updateStatusEnforcesLegalTransition() {
         PurchaseOrder order = new PurchaseOrder("ORD-1", customer);
         ReflectionTestUtils.setField(order, "id", 55L);
-        when(orderRepository.findById(55L)).thenReturn(Optional.of(order));
+        when(orderRepository.findByIdWithDetails(55L)).thenReturn(Optional.of(order));
 
         PurchaseOrder updated = orderService.updateStatus(55L, OrderStatus.PAID);
         assertThat(updated.getStatus()).isEqualTo(OrderStatus.PAID);
@@ -154,7 +154,7 @@ class OrderServiceTest {
     void updateStatusRejectsIllegalTransition() {
         PurchaseOrder order = new PurchaseOrder("ORD-1", customer);
         ReflectionTestUtils.setField(order, "id", 55L);
-        when(orderRepository.findById(55L)).thenReturn(Optional.of(order));
+        when(orderRepository.findByIdWithDetails(55L)).thenReturn(Optional.of(order));
 
         assertThatThrownBy(() -> orderService.updateStatus(55L, OrderStatus.DELIVERED))
                 .isInstanceOf(IllegalStateException.class);
@@ -162,7 +162,7 @@ class OrderServiceTest {
 
     @Test
     void getOrderThrowsWhenMissing() {
-        when(orderRepository.findById(999L)).thenReturn(Optional.empty());
+        when(orderRepository.findByIdWithDetails(999L)).thenReturn(Optional.empty());
         assertThatThrownBy(() -> orderService.getOrder(999L))
                 .isInstanceOf(ResourceNotFoundException.class);
     }

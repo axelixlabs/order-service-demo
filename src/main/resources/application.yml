@@ -10,6 +10,11 @@ spring:
       maximum-pool-size: 10
 
   jpa:
+    # Open-Session-In-View disabled: the persistence context is closed with the
+    # service transaction, so every association a response needs must be fetched
+    # inside that transaction (see the fetch-join repository queries). Any stray
+    # lazy access outside it fails fast instead of silently issuing extra SQL.
+    open-in-view: false
     hibernate:
       # Schema changes belong in Flyway migrations only.
       ddl-auto: validate

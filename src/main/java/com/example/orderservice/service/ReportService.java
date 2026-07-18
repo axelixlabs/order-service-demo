@@ -1,7 +1,7 @@
 package com.example.orderservice.service;
 
-import com.example.orderservice.domain.PurchaseOrder;
 import com.example.orderservice.repository.PurchaseOrderRepository;
+import com.example.orderservice.web.dto.OrderCsvRow;
 import com.example.orderservice.web.dto.OrderResponse;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -34,24 +34,22 @@ public class ReportService {
      * response as CSV. It runs inside a read-only transaction and consumes a JDBC
      * cursor, so the row count never blows up heap.
      *
-     * <p>ANTI-PATTERN (demo): the streaming query does not fetch associations,
-     * so {@code order.getCustomer().getEmail()} and {@code order.getItems()}
-     * below each lazily load per row — an N+1 that runs once for every order in
-     * the export. FIX: {@code join fetch} the customer in the query and load item
-     * counts via a projection or a batched secondary query.
+     * <p>The backing query is a flat {@link OrderCsvRow} projection: the customer
+     * email and the line-item count are resolved in the same SQL statement, so
+     * writing a row triggers no per-order lazy loads (the old N+1 is gone).
      */
     @Transactional(readOnly = true)
     public void exportOrdersCsv(Long customerId, Instant from, Instant to, OutputStream out) {
         Writer writer = new BufferedWriter(new OutputStreamWriter(out, StandardCharsets.UTF_8));
-        try (Stream<PurchaseOrder> orders = orderRepository.streamByCustomerIdAndCreatedAtBetween(customerId, from, to)) {
+        try (Stream<OrderCsvRow> rows = orderRepository.streamOrderCsvRows(customerId, from, to)) {
             writeLine(writer, "order_number", "status", "customer_email", "item_count", "total_amount", "created_at");
-            orders.forEach(order -> writeLine(writer,
-                    order.getOrderNumber(),
-                    order.getStatus().name(),
-                    order.getCustomer().getEmail(),
-                    String.valueOf(order.getItems().size()),
-                    order.getTotalAmount().toPlainString(),
-                    order.getCreatedAt().toString()));
+            rows.forEach(row -> writeLine(writer,
+                    row.orderNumber(),
+                    row.status().name(),
+                    row.customerEmail(),
+                    String.valueOf(row.itemCount()),
+                    row.totalAmount().toPlainString(),
+                    row.createdAt().toString()));
             writer.flush();
         } catch (IOException e) {
             throw new UncheckedIOException("Failed to write CSV report", e);
@@ -61,18 +59,19 @@ public class ReportService {
     /**
      * HEAVY PATH: a paginated feed of one customer's orders, each with its line items.
      *
-     * <p>ANTI-PATTERN (demo): the backing query {@code join fetch}es the items
-     * collection AND takes a {@link Pageable}. Hibernate can't turn that page into
-     * SQL {@code LIMIT}/{@code OFFSET}, so it fetches the whole window and pages IN
-     * MEMORY (watch for {@code HHH000104} in the logs). Note there is no manual
-     * slicing here — we just hand Hibernate a {@code Pageable} and it does the
-     * (in-memory) paging for us, which is exactly the trap. See the repository
-     * method for the fix.
+     * <p>Two-step to keep pagination in the database: step 1 pages the order ids with
+     * real SQL {@code LIMIT}/{@code OFFSET} (no collection fetch, so no in-memory
+     * paging); step 2 fetches the full graph for exactly that page of ids in a single
+     * query. This avoids both the {@code HHH000104} in-memory pagination and the N+1.
      */
     @Transactional(readOnly = true)
     public List<OrderResponse> ordersFeed(Long customerId, Instant from, Instant to, int page, int size) {
         Pageable pageable = PageRequest.of(page, size, Sort.by("createdAt").ascending());
-        return orderRepository.findOrdersWithItemsByCustomerId(customerId, from, to, pageable).stream()
+        List<Long> ids = orderRepository.findOrderIdsByCustomer(customerId, from, to, pageable);
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        return orderRepository.findOrdersWithDetailsByIds(ids).stream()
                 .map(OrderResponse::from)
                 .toList();
     }

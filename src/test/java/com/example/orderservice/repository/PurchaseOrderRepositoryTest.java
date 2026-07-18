@@ -9,11 +9,13 @@ import com.example.orderservice.domain.Payment;
 import com.example.orderservice.domain.PaymentMethod;
 import com.example.orderservice.domain.Product;
 import com.example.orderservice.domain.PurchaseOrder;
+import com.example.orderservice.web.dto.OrderCsvRow;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -51,21 +53,22 @@ class PurchaseOrderRepositoryTest {
     }
 
     @Test
-    void findByIdLoadsOrderAndItsLazyGraphWithinTransaction() {
+    void findByIdWithDetailsLoadsWholeResponseGraphInOneQuery() {
         PurchaseOrder saved = persistSampleOrder();
 
-        PurchaseOrder found = orderRepository.findById(saved.getId()).orElseThrow();
+        PurchaseOrder found = orderRepository.findByIdWithDetails(saved.getId()).orElseThrow();
 
         assertThat(found.getOrderNumber()).isEqualTo("ORD-1");
-        // Lazy associations resolve here only because the test is transactional;
-        // in the hot path this is exactly what fans out into the demonstrated N+1.
+        // Customer, items and payment are all fetch-joined, so these resolve without
+        // any extra SELECT — the fix for the former hot-path N+1.
         assertThat(found.getCustomer().getEmail()).isEqualTo("ada@example.com");
         assertThat(found.getItems()).hasSize(2);
+        assertThat(found.getPayment()).isNotNull();
         assertThat(found.getTotalAmount()).isEqualByComparingTo("300.00");
     }
 
     @Test
-    void findOrdersWithItemsByCustomerIdAppliesPagingAndFetchesItems() {
+    void ordersFeedPaginationPagesIdsInSqlThenFetchesDetails() {
         // Two orders in the window for the same customer; a second customer is ignored.
         Customer customer = new Customer("Ada", "Lovelace", "ada@example.com", "+1");
         customerRepository.save(customer);
@@ -74,47 +77,58 @@ class PurchaseOrderRepositoryTest {
         Category cat = categoryRepository.save(new Category("Electronics", "d"));
         Product keyboard = productRepository.save(new Product("SKU-KB", "Keyboard", "d", new BigDecimal("100.00"), 100, cat));
         Product mouse = productRepository.save(new Product("SKU-MS", "Mouse", "d", new BigDecimal("25.00"), 100, cat));
+        Instant base = Instant.parse("2026-01-01T00:00:00Z");
         for (int i = 1; i <= 2; i++) {
             PurchaseOrder order = new PurchaseOrder("ORD-" + i, customer);
             order.addItem(new OrderItem(keyboard, 2));
             order.addItem(new OrderItem(mouse, 4));
+            // Distinct timestamps so the createdAt sort is deterministic across pages.
+            ReflectionTestUtils.setField(order, "createdAt", base.plusSeconds(i));
             orderRepository.save(order);
         }
         PurchaseOrder otherOrder = new PurchaseOrder("ORD-OTHER", other);
         otherOrder.addItem(new OrderItem(keyboard, 1));
         orderRepository.save(otherOrder);
 
-        List<PurchaseOrder> firstPage = orderRepository.findOrdersWithItemsByCustomerId(
-                customer.getId(),
-                Instant.now().minusSeconds(3600),
-                Instant.now().plusSeconds(3600),
-                PageRequest.of(0, 1, Sort.by("createdAt").ascending()));
+        Instant from = base.minusSeconds(3600);
+        Instant to = base.plusSeconds(3600);
+        Sort sort = Sort.by("createdAt").ascending();
 
-        // One order on the page, and its items are already initialized (fetch join).
-        // Under the hood Hibernate paged this IN MEMORY (HHH000104) because of the
-        // collection fetch — the point of the demo.
+        // Step 1: real SQL LIMIT/OFFSET over ids (no in-memory pagination).
+        List<Long> firstPageIds = orderRepository.findOrderIdsByCustomer(customer.getId(), from, to, PageRequest.of(0, 1, sort));
+        List<Long> secondPageIds = orderRepository.findOrderIdsByCustomer(customer.getId(), from, to, PageRequest.of(1, 1, sort));
+        assertThat(firstPageIds).hasSize(1);
+        assertThat(secondPageIds).hasSize(1);
+        assertThat(secondPageIds).doesNotContainAnyElementsOf(firstPageIds);
+
+        // Step 2: fetch the full graph for just that page of ids.
+        List<PurchaseOrder> firstPage = orderRepository.findOrdersWithDetailsByIds(firstPageIds);
         assertThat(firstPage).hasSize(1);
         assertThat(firstPage.get(0).getCustomer().getId()).isEqualTo(customer.getId());
         assertThat(firstPage.get(0).getItems()).hasSize(2);
     }
 
     @Test
-    void streamByCustomerIdAndCreatedAtBetweenReturnsOnlyThatCustomersOrders() {
+    void streamOrderCsvRowsReturnsOnlyThatCustomersRowsWithItemCount() {
         PurchaseOrder saved = persistSampleOrder();
         Customer other = new Customer("Grace", "Hopper", "grace@example.com", "+1");
         customerRepository.save(other);
-        Category cat = categoryRepository.findAll().get(0);
         Product keyboard = productRepository.findAll().get(0);
         PurchaseOrder otherOrder = new PurchaseOrder("ORD-OTHER", other);
         otherOrder.addItem(new OrderItem(keyboard, 1));
         orderRepository.save(otherOrder);
 
-        long count;
-        try (var stream = orderRepository.streamByCustomerIdAndCreatedAtBetween(
+        List<OrderCsvRow> rows;
+        try (var stream = orderRepository.streamOrderCsvRows(
                 saved.getCustomer().getId(),
                 Instant.now().minusSeconds(3600), Instant.now().plusSeconds(3600))) {
-            count = stream.count();
+            rows = stream.toList();
         }
-        assertThat(count).isEqualTo(1);
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).orderNumber()).isEqualTo("ORD-1");
+        assertThat(rows.get(0).customerEmail()).isEqualTo("ada@example.com");
+        // item_count comes straight from the SQL count() — no per-row lazy load.
+        assertThat(rows.get(0).itemCount()).isEqualTo(2);
     }
 }
