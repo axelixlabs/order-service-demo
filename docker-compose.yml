@@ -51,6 +51,7 @@ services:
     ports:
       - "8080:8080"
     environment:
+      JAVA_OPTS: "-Xms1g -Xmx1g"
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/orderdb
       SPRING_DATASOURCE_USERNAME: orderuser
       SPRING_DATASOURCE_PASSWORD: orderpass

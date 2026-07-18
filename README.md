@@ -1,12 +1,13 @@
 # Order Service Demo
 
-A Spring Boot 3 / Java 17 purchase-order processing service demonstrating a
+A Spring Boot 3 / Java 25 purchase-order processing service demonstrating a
 rich JPA domain model, hot-path and heavy/reporting APIs, and Kafka integration.
 
 ## Tech stack
 
-- Spring Boot 3.3, Java 17 (Gradle toolchain)
+- Spring Boot 3.5, Java 25 (Gradle toolchain)
 - Spring Data JPA + Hibernate
+- Flyway (versioned SQL migrations; Hibernate `ddl-auto` is `validate` only)
 - PostgreSQL (production), H2 (tests)
 - Spring for Apache Kafka
 - Gradle (with wrapper)
@@ -184,19 +185,22 @@ A bulk loader populates PostgreSQL with realistic data for performance demos:
 Orders are spread evenly (100 per customer), timestamps span ~3 years, and
 status/payment/shipment fields follow plausible distributions.
 
-**From the repo root** (starts Postgres, ensures schema, loads data — allow
-30–60 minutes for the full 10M-order load):
+**From the repo root** (starts Postgres, applies Flyway schema via a brief app
+start if needed, then loads data — allow 30–60 minutes for the full 10M-order
+load):
 
 ```bash
 ./scripts/load-test-data.sh
 ```
 
-Or run the Python loader directly against a running database:
+Or run the Python loader directly against a database that already has the
+Flyway schema (`src/main/resources/db/migration/`):
 
 ```bash
 pip install -r scripts/requirements.txt
 # or: python3 -m venv scripts/.venv && scripts/.venv/bin/pip install -r scripts/requirements.txt
-python scripts/load_test_data.py --create-schema
+docker compose up -d app   # apply migrations once, then stop if you prefer
+python scripts/load_test_data.py
 ```
 
 Useful flags: `--seed 42` (reproducible data), `--customers N`, `--orders M`
@@ -210,3 +214,30 @@ docker compose up -d
 ```
 
 The built-in `DataSeeder` skips automatically when products already exist.
+
+## Load testing (k6)
+
+A TypeScript k6 scenario exercises the hot and heavy APIs with a 5-minute ramp
+(30 → 45 → 90 → 45 → 30 virtual users). Each virtual user maps to a customer
+(`customerId = VU id` against bulk-loaded data), then:
+
+1. Fetches the last and second-to-last pages of the orders feed (10 per page)
+2. Creates three orders (30 s apart), transitions them through PAID / PROCESSING /
+   CANCELLED, re-reads the feed, and downloads the CSV export
+
+```bash
+# App must be running with test data loaded
+./load-tests/run-order-flow.sh
+
+# Or directly:
+cd load-tests && k6 run order-flow.ts
+```
+
+For the small demo seed customer only (no bulk load):
+
+```bash
+SEED_MODE=true ./load-tests/run-order-flow.sh
+```
+
+Optional environment variables: `BASE_URL`, `CUSTOMER_COUNT`, `FEED_FROM`,
+`FEED_SIZE`. Install `@types/k6` for IDE support: `cd load-tests && npm install`.

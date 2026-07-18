@@ -13,6 +13,7 @@ Requires: psycopg2-binary (see scripts/requirements.txt)
 
 Usage:
   pip install -r scripts/requirements.txt
+  # Schema must exist first (Flyway via ./scripts/load-test-data.sh or start the app once)
   python scripts/load_test_data.py
 
 Environment variables (defaults match docker-compose):
@@ -220,85 +221,6 @@ TRUNCATE TABLE
 RESTART IDENTITY CASCADE;
 """
 
-SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS categories (
-    id          BIGSERIAL PRIMARY KEY,
-    name        VARCHAR(255) NOT NULL UNIQUE,
-    description VARCHAR(255)
-);
-
-CREATE TABLE IF NOT EXISTS customers (
-    id          BIGSERIAL PRIMARY KEY,
-    first_name  VARCHAR(255) NOT NULL,
-    last_name   VARCHAR(255) NOT NULL,
-    email       VARCHAR(255) NOT NULL UNIQUE,
-    phone       VARCHAR(255),
-    created_at  TIMESTAMPTZ NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS addresses (
-    id          BIGSERIAL PRIMARY KEY,
-    customer_id BIGINT NOT NULL REFERENCES customers(id),
-    type        VARCHAR(255) NOT NULL,
-    street      VARCHAR(255) NOT NULL,
-    city        VARCHAR(255) NOT NULL,
-    state       VARCHAR(255),
-    postal_code VARCHAR(255) NOT NULL,
-    country     VARCHAR(255) NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS products (
-    id             BIGSERIAL PRIMARY KEY,
-    sku            VARCHAR(255) NOT NULL UNIQUE,
-    name           VARCHAR(255) NOT NULL,
-    description    VARCHAR(2000),
-    price          NUMERIC(12, 2) NOT NULL,
-    stock_quantity INTEGER NOT NULL,
-    category_id    BIGINT NOT NULL REFERENCES categories(id),
-    version        BIGINT
-);
-
-CREATE TABLE IF NOT EXISTS purchase_orders (
-    id           BIGSERIAL PRIMARY KEY,
-    order_number VARCHAR(255) NOT NULL UNIQUE,
-    customer_id  BIGINT NOT NULL REFERENCES customers(id),
-    status       VARCHAR(255) NOT NULL,
-    total_amount NUMERIC(14, 2) NOT NULL,
-    created_at   TIMESTAMPTZ NOT NULL,
-    updated_at   TIMESTAMPTZ NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS order_items (
-    id         BIGSERIAL PRIMARY KEY,
-    order_id   BIGINT NOT NULL REFERENCES purchase_orders(id),
-    product_id BIGINT NOT NULL REFERENCES products(id),
-    quantity   INTEGER NOT NULL,
-    unit_price NUMERIC(12, 2) NOT NULL,
-    line_total NUMERIC(14, 2) NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS payments (
-    id             BIGSERIAL PRIMARY KEY,
-    order_id       BIGINT NOT NULL UNIQUE REFERENCES purchase_orders(id),
-    amount         NUMERIC(14, 2) NOT NULL,
-    method         VARCHAR(255) NOT NULL,
-    status         VARCHAR(255) NOT NULL,
-    transaction_id VARCHAR(255),
-    paid_at        TIMESTAMPTZ
-);
-
-CREATE TABLE IF NOT EXISTS shipments (
-    id                  BIGSERIAL PRIMARY KEY,
-    order_id            BIGINT NOT NULL UNIQUE REFERENCES purchase_orders(id),
-    shipping_address_id BIGINT NOT NULL REFERENCES addresses(id),
-    status              VARCHAR(255) NOT NULL,
-    carrier             VARCHAR(255),
-    tracking_number     VARCHAR(255),
-    shipped_at          TIMESTAMPTZ,
-    delivered_at        TIMESTAMPTZ
-);
-"""
-
 
 def money(value: float | Decimal) -> str:
     return str(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
@@ -359,8 +281,21 @@ def connect_db(args: argparse.Namespace):
     )
 
 
-def ensure_schema(cur) -> None:
-    cur.execute(SCHEMA_SQL)
+def require_schema(cur) -> None:
+    cur.execute(
+        """
+        SELECT COUNT(*) FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'customers'
+        """
+    )
+    if cur.fetchone()[0] == 0:
+        print(
+            "Database schema not found. Apply Flyway migrations first, e.g.:\n"
+            "  ./scripts/load-test-data.sh\n"
+            "  # or start the Spring app once: docker compose up -d app",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def load_categories(cur, rng: random.Random) -> None:
@@ -623,11 +558,6 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not truncate existing data (will likely fail on unique constraints)",
     )
-    parser.add_argument(
-        "--create-schema",
-        action="store_true",
-        help="Create tables if they do not exist (normally created by the Spring app)",
-    )
     args = parser.parse_args()
 
     NUM_CATEGORIES = args.categories
@@ -648,9 +578,7 @@ def main() -> int:
 
     try:
         with conn.cursor() as cur:
-            if args.create_schema:
-                log("Ensuring schema exists ...")
-                ensure_schema(cur)
+            require_schema(cur)
 
             if not args.skip_truncate:
                 log("Truncating existing data ...")

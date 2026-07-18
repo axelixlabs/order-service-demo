@@ -11,7 +11,8 @@ spring:
 
   jpa:
     hibernate:
-      ddl-auto: update
+      # Schema changes belong in Flyway migrations only.
+      ddl-auto: validate
     properties:
       hibernate:
         jdbc:

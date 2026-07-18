@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- Build stage ----
-FROM gradle:8.10.2-jdk17 AS build
+FROM gradle:9.1.0-jdk25 AS build
 WORKDIR /workspace
 
 # Warm the dependency cache first for faster incremental builds.
@@ -14,7 +14,7 @@ COPY src ./src
 RUN gradle --no-daemon clean bootJar -x test
 
 # ---- Runtime stage ----
-FROM eclipse-temurin:17-jre AS runtime
+FROM eclipse-temurin:25-jre AS runtime
 WORKDIR /app
 
 # Run as a non-root user.

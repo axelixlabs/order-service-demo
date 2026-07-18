@@ -1,7 +1,7 @@
 plugins {
     id 'java'
-    id 'org.springframework.boot' version '3.3.4'
-    id 'io.spring.dependency-management' version '1.1.6'
+    id 'org.springframework.boot' version '3.5.16'
+    id 'io.spring.dependency-management' version '1.1.7'
 }
 
 group = 'com.example'
@@ -10,9 +10,9 @@ description = 'Purchase Order processing service'
 
 java {
     toolchain {
-        // The application targets Java 17 even though a newer JDK may be
-        // installed. Gradle auto-detects a matching toolchain (e.g. via SDKMAN).
-        languageVersion = JavaLanguageVersion.of(17)
+        // The application targets Java 25 even though a different JDK may be the
+        // default. Gradle auto-detects a matching toolchain (e.g. via SDKMAN).
+        languageVersion = JavaLanguageVersion.of(25)
     }
 }
 
@@ -31,6 +31,9 @@ dependencies {
 
     // Persistence (Hibernate via Spring Data JPA)
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    // Schema owned by Flyway — never Hibernate ddl-auto
+    implementation 'org.flywaydb:flyway-core'
+    implementation 'org.flywaydb:flyway-database-postgresql'
 
     // Messaging
     implementation 'org.springframework.kafka:spring-kafka'

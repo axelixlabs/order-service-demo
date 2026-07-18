@@ -1,0 +1,12 @@
+{
+  "name": "order-service-load-tests",
+  "private": true,
+  "scripts": {
+    "test": "k6 run order-flow.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/k6": "^1.0.0",
+    "typescript": "^5.8.3"
+  }
+}

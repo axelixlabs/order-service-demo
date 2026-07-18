@@ -15,3 +15,6 @@ build/
 
 # Test data loader venv
 scripts/.venv/
+
+# k6 load-test dev dependencies
+load-tests/node_modules/
